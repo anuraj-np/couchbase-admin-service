@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  couchbase:
+    image: couchbase/server:7.0.2
+    container_name: couchbase-test
+    ports:
+      - "8091-8096:8091-8096"
+      - "11210:11210"
+    environment:
+      - COUCHBASE_ADMINISTRATOR_USERNAME=Administrator
+      - COUCHBASE_ADMINISTRATOR_PASSWORD=123456
+    volumes:
+      - couchbase_data:/opt/couchbase/var
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/pools/default"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  couchbase-admin-service:
+    build: .
+    container_name: couchbase-admin-service
+    ports:
+      - "8080:8080"
+    environment:
+      - COUCHBASE_HOST=http://couchbase:8091
+      - COUCHBASE_USERNAME=Administrator
+      - COUCHBASE_PASSWORD=123456
+      - AUTH_ENABLED=true
+      - AUTH_USERNAME=admin
+      - AUTH_PASSWORD=admin
+      - RUST_LOG=info
+    depends_on:
+      couchbase:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  couchbase_data:

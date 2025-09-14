@@ -1,0 +1,52 @@
+[package]
+name = "couchbase-admin-service"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "Rust microservice for Couchbase bucket, scope, collection, and user management"
+license = "MIT"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["macros", "multipart"] }
+tokio = { version = "1.0", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Configuration
+config = "0.14"
+dotenv = "0.15"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Metrics
+prometheus = "0.13"
+
+# Authentication
+base64 = "0.21"
+sha2 = "0.10"
+
+# Async utilities
+futures = "0.3"
+
+# UUID generation
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Chrono for timestamps
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tokio-test = "0.4"

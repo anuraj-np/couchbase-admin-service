@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: couchbase-admin-config
+  namespace: couchbase-admin
+data:
+  COUCHBASE_HOST: "http://your-couchbase-host:8091"
+  COUCHBASE_USERNAME: "Administrator"
+  COUCHBASE_TIMEOUT_SECONDS: "30"
+  AUTH_ENABLED: "true"
+  AUTH_USERNAME: "admin"
+  RUST_LOG: "info"
