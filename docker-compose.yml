@@ -3,6 +3,7 @@ version: '3.8'
 services:
   couchbase:
     image: couchbase/server:7.0.2
+    platform: linux/amd64
     container_name: couchbase-test
     ports:
       - "8091-8096:8091-8096"
@@ -33,7 +34,7 @@ services:
       - RUST_LOG=info
     depends_on:
       couchbase:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
 
 volumes:

@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{info, Level};
+use tracing::{info, error, Level};
 use tracing_subscriber;
 use prometheus::{TextEncoder, Encoder};
 
@@ -34,7 +34,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Configuration loaded successfully");
 
     // Initialize Couchbase service
-    let couchbase_service = services::CouchbaseService::new(&config)?;
+    let couchbase_service = match services::CouchbaseService::new(&config) {
+        Ok(service) => {
+            info!("Couchbase service initialized successfully");
+            service
+        }
+        Err(e) => {
+            error!("Failed to initialize Couchbase service: {}", e);
+            error!("Application will start but Couchbase operations will fail");
+            // Create a dummy service or handle this differently
+            return Err(e.into());
+        }
+    };
 
     // Build application routes
     let app = Router::new()

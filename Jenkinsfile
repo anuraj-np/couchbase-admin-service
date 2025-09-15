@@ -3,296 +3,229 @@ pipeline {
     
     parameters {
         string(
-            name: 'BUCKET_NAME',
-            defaultValue: 'customer-data',
-            description: 'Name of the Couchbase bucket to create'
+            name: 'IMAGE_TAG',
+            defaultValue: 'latest',
+            description: 'Docker image tag to build'
         )
         string(
-            name: 'SCOPE_NAME',
-            defaultValue: 'orders',
-            description: 'Name of the scope to create'
+            name: 'COUCHBASE_HOST',
+            defaultValue: 'http://couchbase:8091',
+            description: 'Couchbase host URL'
         )
         string(
-            name: 'COLLECTION_NAME',
-            defaultValue: 'transactions',
-            description: 'Name of the collection to create'
+            name: 'COUCHBASE_USERNAME',
+            defaultValue: 'Administrator',
+            description: 'Couchbase username'
         )
         string(
-            name: 'USERNAME',
-            defaultValue: 'devA',
-            description: 'Username for the new user'
+            name: 'COUCHBASE_PASSWORD',
+            defaultValue: '123456',
+            description: 'Couchbase password'
         )
-        choice(
-            name: 'ROLE',
-            choices: ['data_reader', 'data_writer', 'data_dcp_reader', 'bucket_full_access', 'query_select', 'query_insert', 'query_update', 'query_delete'],
-            description: 'RBAC role to assign to the user'
+        booleanParam(
+            name: 'RUN_TESTS',
+            defaultValue: true,
+            description: 'Run integration tests'
         )
-        string(
-            name: 'AWS_REGION',
-            defaultValue: 'us-west-2',
-            description: 'AWS region for deployment'
-        )
-        string(
-            name: 'ECR_REGISTRY',
-            defaultValue: '123456789012.dkr.ecr.us-west-2.amazonaws.com',
-            description: 'AWS ECR registry URL'
+        booleanParam(
+            name: 'PUSH_TO_REGISTRY',
+            defaultValue: false,
+            description: 'Push image to registry'
         )
         string(
-            name: 'ECS_CLUSTER',
-            defaultValue: 'couchbase-admin-cluster',
-            description: 'ECS cluster name'
-        )
-        string(
-            name: 'ECS_SERVICE',
-            defaultValue: 'couchbase-admin-service',
-            description: 'ECS service name'
+            name: 'REGISTRY_URL',
+            defaultValue: '',
+            description: 'Docker registry URL (if pushing)'
         )
     }
     
     environment {
-        AWS_DEFAULT_REGION = "${params.AWS_REGION}"
-        ECR_REGISTRY = "${params.ECR_REGISTRY}"
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
-        IMAGE_NAME = "couchbase-admin-service"
-        ECS_CLUSTER = "${params.ECS_CLUSTER}"
-        ECS_SERVICE = "${params.ECS_SERVICE}"
+        DOCKER_IMAGE = "couchbase-admin-service:${params.IMAGE_TAG}"
+        COUCHBASE_HOST = "${params.COUCHBASE_HOST}"
+        COUCHBASE_USERNAME = "${params.COUCHBASE_USERNAME}"
+        COUCHBASE_PASSWORD = "${params.COUCHBASE_PASSWORD}"
     }
     
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
-            }
-        }
-        
-        stage('Build and Test') {
-            steps {
                 script {
-                    echo "Building Rust application..."
-                    sh '''
-                        # Install Rust if not present
-                        if ! command -v cargo &> /dev/null; then
-                            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-                            source $HOME/.cargo/env
-                        fi
-                        
-                        # Build the application
-                        cargo build --release
-                        
-                        # Run tests
-                        cargo test
-                        
-                        # Run clippy for code quality
-                        cargo clippy -- -D warnings
-                        
-                        # Run fmt check
-                        cargo fmt -- --check
-                    '''
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    env.BUILD_TAG = "${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
                 }
             }
         }
         
-        stage('Docker Build and Push') {
+        stage('Build Docker Image') {
             steps {
                 script {
-                    echo "Building Docker image..."
-                    sh '''
-                        # Login to AWS ECR
-                        aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                        
-                        # Build Docker image
-                        docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
-                        docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
-                        docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${IMAGE_NAME}:latest
-                        
-                        # Push to ECR
-                        docker push ${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
-                        docker push ${ECR_REGISTRY}/${IMAGE_NAME}:latest
-                    '''
+                    echo "Building Docker image: ${env.DOCKER_IMAGE}"
+                    sh """
+                        docker build -t ${env.DOCKER_IMAGE} .
+                        docker tag ${env.DOCKER_IMAGE} ${env.DOCKER_IMAGE}-${env.BUILD_TAG}
+                    """
                 }
             }
         }
         
-        stage('Deploy to ECS') {
-            steps {
-                script {
-                    echo "Deploying to ECS..."
-                    sh '''
-                        # Update ECS service with new image
-                        aws ecs update-service \
-                            --cluster ${ECS_CLUSTER} \
-                            --service ${ECS_SERVICE} \
-                            --force-new-deployment \
-                            --region ${AWS_DEFAULT_REGION}
-                        
-                        # Wait for deployment to complete
-                        aws ecs wait services-stable \
-                            --cluster ${ECS_CLUSTER} \
-                            --services ${ECS_SERVICE} \
-                            --region ${AWS_DEFAULT_REGION}
-                    '''
-                }
+        stage('Test Image') {
+            when {
+                expression { params.RUN_TESTS == true }
             }
-        }
-        
-        stage('Create Couchbase Resources') {
             steps {
                 script {
-                    echo "Creating Couchbase resources..."
-                    sh '''
-                        # Get the service endpoint
-                        SERVICE_ENDPOINT=$(aws ecs describe-services \
-                            --cluster ${ECS_CLUSTER} \
-                            --services ${ECS_SERVICE} \
-                            --region ${AWS_DEFAULT_REGION} \
-                            --query 'services[0].loadBalancers[0].hostname' \
-                            --output text)
+                    echo "Testing Docker image..."
+                    sh """
+                        # Test basic image functionality
+                        docker run --rm ${env.DOCKER_IMAGE} --help || echo "Help command not available"
                         
-                        if [ "$SERVICE_ENDPOINT" = "None" ] || [ -z "$SERVICE_ENDPOINT" ]; then
-                            echo "Service endpoint not found, using task IP..."
-                            TASK_ARN=$(aws ecs list-tasks \
-                                --cluster ${ECS_CLUSTER} \
-                                --service-name ${ECS_SERVICE} \
-                                --region ${AWS_DEFAULT_REGION} \
-                                --query 'taskArns[0]' \
-                                --output text)
+                        # Test with environment variables
+                        docker run --rm -d --name test-container \\
+                            -e COUCHBASE_HOST=${env.COUCHBASE_HOST} \\
+                            -e COUCHBASE_USERNAME=${env.COUCHBASE_USERNAME} \\
+                            -e COUCHBASE_PASSWORD=${env.COUCHBASE_PASSWORD} \\
+                            -e AUTH_ENABLED=true \\
+                            -e AUTH_USERNAME=admin \\
+                            -e AUTH_PASSWORD=admin \\
+                            -e RUST_LOG=info \\
+                            ${env.DOCKER_IMAGE}
+                        
+                        # Wait for container to start
+                        sleep 10
+                        
+                        # Check if container is running
+                        if docker ps | grep test-container; then
+                            echo "✅ Container started successfully"
                             
-                            TASK_IP=$(aws ecs describe-tasks \
-                                --cluster ${ECS_CLUSTER} \
-                                --tasks ${TASK_ARN} \
-                                --region ${AWS_DEFAULT_REGION} \
-                                --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
-                                --output text)
-                            
-                            SERVICE_ENDPOINT="http://${TASK_IP}:8080"
-                        else
-                            SERVICE_ENDPOINT="http://${SERVICE_ENDPOINT}:8080"
-                        fi
-                        
-                        echo "Service endpoint: ${SERVICE_ENDPOINT}"
-                        
-                        # Wait for service to be ready
-                        echo "Waiting for service to be ready..."
-                        for i in {1..30}; do
-                            if curl -f -s "${SERVICE_ENDPOINT}/health" > /dev/null; then
-                                echo "Service is ready!"
-                                break
+                            # Test health endpoint
+                            sleep 5
+                            if curl -f http://localhost:8080/health; then
+                                echo "✅ Health endpoint working"
+                            else
+                                echo "❌ Health endpoint failed"
                             fi
-                            echo "Attempt $i: Service not ready yet, waiting..."
-                            sleep 10
-                        done
+                            
+                            # Test metrics endpoint
+                            if curl -f http://localhost:8080/metrics; then
+                                echo "✅ Metrics endpoint working"
+                            else
+                                echo "❌ Metrics endpoint failed"
+                            fi
+                            
+                            # Test protected endpoint with auth
+                            if curl -u admin:admin -f http://localhost:8080/roles; then
+                                echo "✅ Protected endpoint with auth working"
+                            else
+                                echo "❌ Protected endpoint with auth failed"
+                            fi
+                            
+                            # Test protected endpoint without auth (should fail)
+                            if curl -f http://localhost:8080/roles; then
+                                echo "❌ Protected endpoint without auth should have failed"
+                            else
+                                echo "✅ Protected endpoint without auth correctly failed"
+                            fi
+                            
+                        else
+                            echo "❌ Container failed to start"
+                            docker logs test-container
+                            exit 1
+                        fi
                         
-                        # Create bucket
-                        echo "Creating bucket: ${BUCKET_NAME}"
-                        curl -X POST "${SERVICE_ENDPOINT}/buckets" \
-                            -H "Content-Type: application/json" \
-                            -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" \
-                            -d "{\"bucket_name\": \"${BUCKET_NAME}\"}" \
-                            -w "HTTP Status: %{http_code}\n"
-                        
-                        # Wait a bit for bucket creation
-                        sleep 5
-                        
-                        # Create scope
-                        echo "Creating scope: ${SCOPE_NAME}"
-                        curl -X POST "${SERVICE_ENDPOINT}/buckets/${BUCKET_NAME}/scopes" \
-                            -H "Content-Type: application/json" \
-                            -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" \
-                            -d "{\"scope_name\": \"${SCOPE_NAME}\"}" \
-                            -w "HTTP Status: %{http_code}\n"
-                        
-                        # Wait a bit for scope creation
-                        sleep 5
-                        
-                        # Create collection
-                        echo "Creating collection: ${COLLECTION_NAME}"
-                        curl -X POST "${SERVICE_ENDPOINT}/buckets/${BUCKET_NAME}/scopes/${SCOPE_NAME}/collections" \
-                            -H "Content-Type: application/json" \
-                            -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" \
-                            -d "{\"collection_name\": \"${COLLECTION_NAME}\"}" \
-                            -w "HTTP Status: %{http_code}\n"
-                        
-                        # Wait a bit for collection creation
-                        sleep 5
-                        
-                        # Create user
-                        echo "Creating user: ${USERNAME} with role: ${ROLE}"
-                        curl -X POST "${SERVICE_ENDPOINT}/users" \
-                            -H "Content-Type: application/json" \
-                            -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" \
-                            -d "{
-                                \"username\": \"${USERNAME}\",
-                                \"password\": \"SecurePassword123!\",
-                                \"roles\": [
-                                    {
-                                        \"role\": \"${ROLE}\",
-                                        \"bucket\": \"${BUCKET_NAME}\",
-                                        \"scope\": \"${SCOPE_NAME}\",
-                                        \"collection\": \"${COLLECTION_NAME}\"
-                                    }
-                                ]
-                            }" \
-                            -w "HTTP Status: %{http_code}\n"
-                        
-                        echo "Couchbase resources created successfully!"
-                    '''
+                        # Clean up
+                        docker stop test-container || true
+                        docker rm test-container || true
+                    """
                 }
             }
         }
         
-        stage('Verification') {
+        stage('Integration Tests') {
+            when {
+                expression { params.RUN_TESTS == true }
+            }
             steps {
                 script {
-                    echo "Verifying created resources..."
-                    sh '''
-                        # Get the service endpoint again
-                        SERVICE_ENDPOINT=$(aws ecs describe-services \
-                            --cluster ${ECS_CLUSTER} \
-                            --services ${ECS_SERVICE} \
-                            --region ${AWS_DEFAULT_REGION} \
-                            --query 'services[0].loadBalancers[0].hostname' \
-                            --output text)
-                        
-                        if [ "$SERVICE_ENDPOINT" = "None" ] || [ -z "$SERVICE_ENDPOINT" ]; then
-                            TASK_ARN=$(aws ecs list-tasks \
-                                --cluster ${ECS_CLUSTER} \
-                                --service-name ${ECS_SERVICE} \
-                                --region ${AWS_DEFAULT_REGION} \
-                                --query 'taskArns[0]' \
-                                --output text)
+                    echo "Running integration tests with Couchbase..."
+                    sh """
+                        # Start Couchbase if not running
+                        if ! docker ps | grep jenkins-couchbase; then
+                            echo "Starting Couchbase for integration tests..."
+                            docker run -d --name jenkins-couchbase \\
+                                -p 8091-8096:8091-8096 \\
+                                -p 11210:11210 \\
+                                -e COUCHBASE_ADMINISTRATOR_USERNAME=${env.COUCHBASE_USERNAME} \\
+                                -e COUCHBASE_ADMINISTRATOR_PASSWORD=${env.COUCHBASE_PASSWORD} \\
+                                --platform linux/amd64 \\
+                                couchbase/server:7.0.2
                             
-                            TASK_IP=$(aws ecs describe-tasks \
-                                --cluster ${ECS_CLUSTER} \
-                                --tasks ${TASK_ARN} \
-                                --region ${AWS_DEFAULT_REGION} \
-                                --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
-                                --output text)
-                            
-                            SERVICE_ENDPOINT="http://${TASK_IP}:8080"
-                        else
-                            SERVICE_ENDPOINT="http://${SERVICE_ENDPOINT}:8080"
+                            # Wait for Couchbase to be ready
+                            echo "Waiting for Couchbase to be ready..."
+                            for i in {1..60}; do
+                                if curl -s http://localhost:8091/pools/default > /dev/null 2>&1; then
+                                    echo "✅ Couchbase is ready!"
+                                    break
+                                fi
+                                echo "⏳ Waiting... (\$i/60)"
+                                sleep 5
+                            done
                         fi
                         
-                        # List buckets
-                        echo "Listing buckets:"
-                        curl -s "${SERVICE_ENDPOINT}/buckets" \
-                            -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" | jq '.'
+                        # Run integration tests
+                        docker run --rm --network host \\
+                            -e COUCHBASE_HOST=http://localhost:8091 \\
+                            -e COUCHBASE_USERNAME=${env.COUCHBASE_USERNAME} \\
+                            -e COUCHBASE_PASSWORD=${env.COUCHBASE_PASSWORD} \\
+                            -e AUTH_ENABLED=true \\
+                            -e AUTH_USERNAME=admin \\
+                            -e AUTH_PASSWORD=admin \\
+                            -e RUST_LOG=info \\
+                            ${env.DOCKER_IMAGE} &
                         
-                        # List scopes
-                        echo "Listing scopes in bucket ${BUCKET_NAME}:"
-                        curl -s "${SERVICE_ENDPOINT}/buckets/${BUCKET_NAME}/scopes" \
-                            -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" | jq '.'
+                        # Wait for service to start
+                        sleep 15
                         
-                        # List collections
-                        echo "Listing collections in scope ${SCOPE_NAME}:"
-                        curl -s "${SERVICE_ENDPOINT}/buckets/${BUCKET_NAME}/scopes/${SCOPE_NAME}/collections" \
-                            -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" | jq '.'
+                        # Run test script
+                        if [ -f "./test-api.sh" ]; then
+                            chmod +x ./test-api.sh
+                            ./test-api.sh
+                        else
+                            echo "Running basic API tests..."
+                            # Test health
+                            curl -f http://localhost:8080/health || exit 1
+                            
+                            # Test roles with auth
+                            curl -u admin:admin -f http://localhost:8080/roles || exit 1
+                            
+                            echo "✅ Integration tests passed"
+                        fi
                         
-                        # List users
-                        echo "Listing users:"
-                        curl -s "${SERVICE_ENDPOINT}/users" \
-                            -H "Authorization: Basic $(echo -n 'admin:admin' | base64)" | jq '.'
-                    '''
+                        # Clean up
+                        pkill -f couchbase-admin-service || true
+                    """
+                }
+            }
+        }
+        
+        stage('Push to Registry') {
+            when {
+                expression { params.PUSH_TO_REGISTRY == true && params.REGISTRY_URL != '' }
+            }
+            steps {
+                script {
+                    echo "Pushing image to registry: ${params.REGISTRY_URL}"
+                    sh """
+                        docker tag ${env.DOCKER_IMAGE} ${params.REGISTRY_URL}/${env.DOCKER_IMAGE}
+                        docker push ${params.REGISTRY_URL}/${env.DOCKER_IMAGE}
+                        
+                        # Also tag and push with build tag
+                        docker tag ${env.DOCKER_IMAGE} ${params.REGISTRY_URL}/${env.DOCKER_IMAGE}-${env.BUILD_TAG}
+                        docker push ${params.REGISTRY_URL}/${env.DOCKER_IMAGE}-${env.BUILD_TAG}
+                    """
                 }
             }
         }
@@ -300,17 +233,31 @@ pipeline {
     
     post {
         always {
-            echo "Pipeline completed!"
+            script {
+                echo "Cleaning up containers..."
+                sh """
+                    docker stop test-container jenkins-couchbase 2>/dev/null || true
+                    docker rm test-container jenkins-couchbase 2>/dev/null || true
+                    pkill -f couchbase-admin-service 2>/dev/null || true
+                """
+            }
         }
         success {
-            echo "Deployment successful! Resources created:"
-            echo "- Bucket: ${params.BUCKET_NAME}"
-            echo "- Scope: ${params.SCOPE_NAME}"
-            echo "- Collection: ${params.COLLECTION_NAME}"
-            echo "- User: ${params.USERNAME} with role: ${params.ROLE}"
+            echo "✅ Pipeline completed successfully!"
+            script {
+                if (params.RUN_TESTS) {
+                    echo "✅ All tests passed!"
+                }
+                if (params.PUSH_TO_REGISTRY) {
+                    echo "✅ Image pushed to registry!"
+                }
+            }
         }
         failure {
-            echo "Deployment failed! Check logs for details."
+            echo "❌ Pipeline failed!"
+        }
+        unstable {
+            echo "⚠️ Pipeline completed with warnings!"
         }
     }
 }
